@@ -2,7 +2,7 @@
 % Please edit documentation in R/DrBoost.R
 \name{disjoint_rule_boost}
 \alias{disjoint_rule_boost}
-\title{Disjoint Rule Boosting (Exhaustive up to 3D) with binning & validation (Parallel Search)}
+\title{Disjoint Rule Boosting (Gradient-Boosting Style) with Excluding Repeated Failing Regions}
 \usage{
 disjoint_rule_boost(
   X_train,
@@ -10,62 +10,76 @@ disjoint_rule_boost(
   X_val,
   Y_val,
   outcome_type = c("continuous", "binary"),
-  feature_types = NULL,
-  num_thresholds = 50,
+  thresholds_list = NULL,
+  logic = FALSE,
+  K1 = 200,
+  K2 = 200,
+  K3 = 200,
+  K4 = 200,
+  featureNames = character(0),
+  K_twoWay = 100,
+  K_threeWay = 100,
   max_iterations = 20,
+  learning_rate = 0.1,
   min_obs_pct = 0.05,
-  patience = 3
+  max_obs_frac = 1,
+  patience = 3,
+  second_order_logistic = TRUE,
+  max_region_retries = 5
 )
 }
 \arguments{
-\item{X_train}{(n x p) numeric matrix of training features}
+\item{X_train}{matrix or data.frame of shape (n x p)}
 
-\item{Y_train}{numeric vector of length n, either continuous or 0/1 for binary classification}
+\item{Y_train}{numeric vector (length n): continuous or {0,1}}
 
-\item{X_val}{(m x p) numeric matrix of validation features}
+\item{X_val}{matrix or data.frame of shape (m x p)}
 
-\item{Y_val}{numeric vector of length m}
+\item{Y_val}{numeric vector (length m)}
 
-\item{outcome_type}{Either \code{"continuous"} or \code{"binary"}.}
+\item{outcome_type}{"continuous" or "binary"}
 
-\item{feature_types}{character vector (length p) e.g. c("binary", "continuous", "ordinal").}
+\item{thresholds_list}{numeric matrix for bounding-box approach (if logic=FALSE)}
 
-\item{num_thresholds}{integer, e.g. 50. Number of threshold cutpoints per feature (where applicable).}
+\item{logic}{boolean; if TRUE, do logic-based search. If FALSE, bounding-box}
 
-\item{max_iterations}{maximum boosting iterations}
+\item{K1, K2, K3, K4}{integers for beam-search expansions (bounding-box)}
 
-\item{min_obs_pct}{minimum fraction coverage for a region to be valid}
+\item{featureNames}{character vector of length p (for bounding-box rule strings)}
 
-\item{patience}{integer, number of consecutive iterations allowed without improvement in validation error}
+\item{K_twoWay, K_threeWay}{integers for logic expansions}
+
+\item{max_iterations}{integer, maximum boosting steps}
+
+\item{learning_rate}{numeric, e.g. 0.1}
+
+\item{min_obs_pct}{numeric, min coverage fraction}
+
+\item{max_obs_frac}{numeric, max coverage fraction to avoid giant rules}
+
+\item{patience}{integer, early-stopping if no improvement for \code{patience} steps}
+
+\item{second_order_logistic}{bool: if TRUE, uses 2nd-order updates for logistic}
+
+\item{max_region_retries}{integer, how many candidate boxes we try per iteration
+before concluding none helps validation}
 }
 \value{
 A list with:
-\item{regions}{the final chosen bounding boxes (disjoint) in the best model}
-\item{coeffs}{the numeric coefficient for each region}
-\item{fitted_train}{final predictions on training data (raw scale if continuous, logit scale if binary)}
-\item{fitted_val}{final predictions on validation data (same scale as fitted_train)}
-\item{train_mse}{final MSE on training (on probability scale if binary)}
-\item{val_mse}{final MSE on validation (on probability scale if binary)}
-\item{validation_errors}{history of validation MSE across iterations}
-\item{iter}{number of iterations actually performed}
+\item{init}{the initial intercept (numeric scalar)}
+\item{rule_list}{list of discovered rules (each with coverage, beta, region info)}
+\item{f_train}{final fitted values on training (numeric vector)}
+\item{f_val}{final fitted values on validation}
+\item{train_loss_final}{final train loss}
+\item{val_loss_final}{final validation loss}
+\item{validation_losses}{history of validation losses}
+\item{best_val_loss}{lowest validation loss found}
+\item{best_iteration}{iteration index with best validation}
 }
 \description{
-Creates thresholds for each feature (binary/ordinal/continuous),
-enumerates 1D/2D/3D bounding boxes in parallel (via OpenMP) that are disjoint
-from old ones, picks the best region, updates a piecewise-constant model.
-Early stopping is based on validation MSE with a patience parameter.
-}
-\details{
-\itemize{
-\item We call \code{\link{build_thresholds_list}} to produce a matrix of cutpoints (\code{thresholds_list}).
-\item Each iteration calls \code{find_best_region_cpp_3way_omp} for a parallel
-exhaustive search of 1D, 2D, 3D bounding boxes, skipping overlap with previously
-chosen boxes.
-\item The region with largest \(\lvert \text{mean residual}\rvert \,\sqrt{\text{coverage}}\) is chosen.
-\item If \code{outcome_type="binary"}, \code{fitted_train} and \code{fitted_val} store
-the logit-scale predictions, the residual is \code{Y - plogis(fitted)}, and we measure
-MSE in the probability space: \(\frac{1}{n}\sum (Y_i - \mathrm{plogis}(fitted_i))^2\).
-\item If \code{outcome_type="continuous"}, we do ordinary residual = \code{Y - fitted},
-and measure MSE on the raw scale.
-}
+Builds a piecewise-constant model as a sum of disjoint rules,
+with gradient-boosting style updates and a small loop each iteration
+to skip repeated failing regions. If the top region from beam-search
+hurts validation loss, we exclude that region (so it won't keep appearing)
+and re-run beam-search to get the next-best box, up to \code{max_region_retries} tries.
 }

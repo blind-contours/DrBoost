@@ -1,0 +1,1282 @@
+---
+title: "DrBoost: An Interpretable Approach to Disjoint Rule-Based Boosting"
+author: "DrBoost Team"
+date: "`r Sys.Date()`"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 3
+    fig_width: 7
+    fig_height: 5
+vignette: >
+  %\VignetteIndexEntry{DrBoost: An Interpretable Approach to Disjoint Rule-Based Boosting}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5,
+  dpi = 120,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+## 1. Introduction
+
+### 1.1 What is DrBoost?
+
+**DrBoost** implements disjoint rule-based boosting, a novel machine learning approach that combines the predictive power of ensemble methods with the interpretability of rule-based models. Unlike traditional boosting algorithms, DrBoost constructs a piecewise-constant model where **each observation is covered by exactly one rule**. This "one-rule-per-point" architecture eliminates the ambiguity of overlapping tree ensembles, making the model globally interpretable.
+
+### 1.2 Why Use DrBoost?
+
+* **Clear explanations**: Every prediction comes with its corresponding rule, providing direct insight into which features drove that specific decision
+* **Global interpretability**: The complete model forms a transparent partition of the feature space, with no overlapping rules
+* **Competitive accuracy**: Achieves predictive performance comparable to black-box methods without sacrificing interpretability
+* **Theoretical guarantees**: Can recover true piecewise-constant structure when present in the data
+* **Dual-mode operation**: Works with both continuous features (via bounding boxes) and binary features (via logical expressions)
+
+### 1.3 Installation
+
+Install the development version from GitHub:
+
+```{r installation, eval=FALSE}
+# Using pak (recommended)
+if (!requireNamespace("pak", quietly = TRUE)) {
+  install.packages("pak")
+}
+pak::pak("blind-contours/DrBoost")
+
+# Alternatively, using devtools
+# if (!requireNamespace("devtools", quietly = TRUE)) {
+#   install.packages("devtools")
+# }
+# devtools::install_github("blind-contours/DrBoost")
+```
+
+```{r load-library}
+library(DrBoost)
+```
+
+## 2. Key Concepts
+
+### 2.1 Disjoint Rules
+
+The cornerstone of DrBoost is its construction of **disjoint rules** that form a partition of the feature space. This means:
+
+* Each data point belongs to exactly one rule
+* Rules never overlap
+* The collection of rules covers the entire feature space
+
+When using DrBoost, you get a model of the form:
+
+$f(x) = f^{(0)} + \sum_{m=1}^{M} \beta_m \cdot \mathbb{I}_{R_m}(x)$
+
+Where:
+* $f^{(0)}$ is the initial prediction (intercept)
+* $R_m$ is a region defined by a rule (either a hyperrectangle or a logical expression)
+* $\beta_m$ is the coefficient for that region
+* $\mathbb{I}_{R_m}(x)$ equals 1 if $x$ is in region $R_m$, and 0 otherwise
+
+### 2.2 Two Operational Modes
+
+DrBoost offers two complementary approaches:
+
+1. **Bounding-box mode** (`logic=FALSE`): Discovers axis-aligned hyperrectangles in continuous feature space
+2. **Logical rule mode** (`logic=TRUE`): Builds AND/OR expressions for binary features
+
+This flexibility allows DrBoost to handle diverse data types while maintaining its core interpretability benefits.
+
+### 2.3 Boosting Process
+
+DrBoost follows a gradient boosting-style procedure:
+
+1. Start with a simple baseline prediction (mean/intercept)
+2. Compute residuals (difference between observed and predicted values)
+3. Find the best disjoint region to explain current residuals
+4. Add this region with its coefficient to the model
+5. Update predictions and residuals
+6. Repeat until convergence or maximum iterations
+
+The non-overlapping constraint ensures clear interpretations and serves as a form of regularization.
+
+## 3. Regression with Continuous Features
+
+### 3.1 Synthetic Example: Piecewise-Constant Function
+
+Let's start with a synthetic example that has a clear piecewise-constant structure:
+
+```{r piecewise-constant-data}
+set.seed(42)
+n <- 500  # Increase sample size for better visualization
+
+# Generate synthetic data
+X <- matrix(runif(n*2), nrow=n, ncol=2)
+colnames(X) <- c("X1", "X2")
+
+# Define true function with four distinct regions
+f_true <- function(x1, x2) {
+  if (x1 < 0.5 && x2 < 0.5) {
+    return(2)
+  } else if (x1 >= 0.5 && x2 < 0.5) {
+    return(5)
+  } else if (x1 < 0.5 && x2 >= 0.5) {
+    return(3)
+  } else {
+    return(8)
+  }
+}
+
+# Generate response with moderate noise
+y_true <- apply(X, 1, function(r) f_true(r[1], r[2]))
+y_obs <- y_true + rnorm(n, sd=0.5)
+
+# Split data: 70% training, 15% validation, 15% test
+set.seed(123)  # For reproducible splits
+indices <- sample(1:3, size=n, replace=TRUE, prob=c(0.7, 0.15, 0.15))
+X_train <- X[indices == 1, , drop=FALSE]
+y_train <- y_obs[indices == 1]
+X_val <- X[indices == 2, , drop=FALSE]  
+y_val <- y_obs[indices == 2]
+X_test <- X[indices == 3, , drop=FALSE]
+y_test <- y_obs[indices == 3]
+y_test_true <- y_true[indices == 3]  # For evaluation against ground truth
+
+# Visualize the data
+library(ggplot2)
+library(viridis)
+library(gridExtra)
+
+df <- data.frame(X, y_true=y_true, y_obs=y_obs)
+
+p1 <- ggplot(df, aes(x=X1, y=X2, color=y_true)) +
+  geom_point(size=2, alpha=0.7) +
+  scale_color_viridis(option="plasma") +
+  geom_vline(xintercept=0.5, linetype="dashed") +
+  geom_hline(yintercept=0.5, linetype="dashed") +
+  labs(title="True Function", color="Value") +
+  theme_minimal()
+
+p2 <- ggplot(df, aes(x=X1, y=X2, color=y_obs)) +
+  geom_point(size=2, alpha=0.7) +
+  scale_color_viridis(option="plasma") +
+  labs(title="Observed Data (with noise)", color="Value") +
+  theme_minimal()
+
+grid.arrange(p1, p2, ncol=2)
+```
+
+The visualization shows our true piecewise-constant function with four distinct regions (left) and the noisy observations we'll use for training (right).
+
+### 3.2 Threshold Binning
+
+DrBoost's bounding-box mode requires a list of threshold values for each continuous feature. These thresholds define the candidate cut points for creating axis-aligned boxes.
+
+```{r thresholds-function}
+# Helper function to create thresholds list
+build_thresholds_list <- function(X, num_thresholds=10) {
+  p <- ncol(X)
+  out <- matrix(NA_real_, nrow=num_thresholds, ncol=p)
+  for (j in seq_len(p)) {
+    # Use quantiles for better threshold distribution
+    out[, j] <- quantile(X[,j], probs=seq(0,1,length.out=num_thresholds))
+  }
+  out
+}
+
+# Create thresholds - more thresholds allow finer-grained boxes
+thresholds_list <- build_thresholds_list(X_train, num_thresholds=15)
+head(thresholds_list)
+```
+
+**Parameter importance:** The number of thresholds directly affects the granularity of discovered rules:
+- Too few thresholds → may miss important boundaries
+- Too many thresholds → computational overhead, potential overfitting
+- Recommended range: 10-20 for most datasets
+
+### 3.3 Fitting the DrBoost Model
+
+Now we'll fit a DrBoost model using the bounding-box approach:
+
+```{r fit-continuous-drboost}
+# Fit DrBoost regression model with detailed parameter settings
+drb_model <- disjoint_rule_boost(
+  X_train = X_train, 
+  Y_train = y_train,
+  X_val = X_val,   
+  Y_val = y_val,
+  
+  # Core settings
+  outcome_type = "continuous",        # For regression tasks
+  logic = FALSE,                      # Use bounding-boxes (hyperrectangles)
+  thresholds_list = thresholds_list,  # Our candidate thresholds
+  
+  # Boosting parameters
+  max_iterations = 20,                # Maximum number of boosting rounds
+  learning_rate = 1.0,                # Step size for updates (1.0 for piecewise-constant)
+  
+  # Early stopping & regularization
+  patience = 5,                       # Stop if validation doesn't improve for 5 rounds
+  min_obs_pct = 0.05,                 # Minimum coverage (% of points)
+  max_obs_frac = 0.5,                 # Maximum coverage (% of points)
+  max_region_retries = 5,             # Try up to 5 regions if best one doesn't help
+  
+  # Beam search parameters (control computation)
+  K1 = 200,                           # Max candidates for 1D expansions
+  K2 = 200,                           # Max candidates for 2D expansions
+  K3 = 200,                           # Max candidates for 3D expansions
+  K4 = 200,                           # Max candidates for 4D expansions
+  
+  # Feature names for interpretable rules
+  featureNames = colnames(X_train)
+)
+```
+
+### 3.4 Examining the Model
+
+Let's explore the model we've built:
+
+```{r examine-model}
+# Basic model summary
+cat("Initial prediction (intercept):", round(drb_model$init, 3), "\n")
+cat("Number of rules discovered:", length(drb_model$rule_list), "\n")
+cat("Best validation loss:", round(drb_model$best_val_loss, 4), "\n")
+cat("Training loss:", round(drb_model$train_loss_final, 4), "\n\n")
+
+# Display validation loss trajectory
+plot(drb_model$validation_losses, type="o", col="blue", 
+     xlab="Iteration", ylab="Validation Loss", 
+     main="Validation Loss vs Iterations")
+abline(v=drb_model$best_iteration, col="red", lty=2)
+text(drb_model$best_iteration, min(drb_model$validation_losses), 
+     "Best model", pos=4, col="red")
+
+# Examine the discovered rules
+cat("\nDisjoint Rules:\n")
+cat("---------------\n")
+for (i in seq_along(drb_model$rule_list)) {
+  rule <- drb_model$rule_list[[i]]
+  cat("Rule", i, "\n")
+  cat("  Region:", rule$region_info$rule_string, "\n")
+  cat("  Coefficient:", round(rule$beta, 3), "\n")
+  cat("  Coverage:", rule$coverage, "points\n")
+  cat("  Validation loss after adding:", round(rule$val_loss, 4), "\n\n")
+}
+```
+
+**Interpretation tips:**
+- The coefficient for each region represents the adjustment from the baseline prediction (intercept)
+- Larger absolute coefficients indicate stronger effects
+- The coverage shows how many training points fall within each region
+- The validation loss trajectory shows how each rule improved generalization
+
+### 3.5 Visualizing Discovered Regions
+
+One advantage of DrBoost with 2D data is that we can clearly visualize the discovered regions:
+
+```{r visualize-regions, fig.height=7, fig.width=10}
+# Function to create a prediction grid
+create_prediction_grid <- function(model, xrange=c(0,1), yrange=c(0,1), resolution=100) {
+  # Create a grid
+  x_grid <- seq(xrange[1], xrange[2], length.out=resolution)
+  y_grid <- seq(yrange[1], yrange[2], length.out=resolution)
+  grid_points <- expand.grid(X1=x_grid, X2=y_grid)
+  X_grid <- as.matrix(grid_points)
+  colnames(X_grid) <- c("X1", "X2")
+  
+  # Get predictions
+  preds <- predict_disjoint_rule_boost(
+    object = model,
+    X_new = X_grid,
+    outcome_type = "continuous",
+    logic = FALSE
+  )
+  
+  # Return as data frame
+  grid_points$prediction <- preds
+  return(list(
+    grid_df = grid_points,
+    x_grid = x_grid,
+    y_grid = y_grid,
+    z_matrix = matrix(preds, nrow=resolution, ncol=resolution)
+  ))
+}
+
+# Generate predictions on a grid
+grid_results <- create_prediction_grid(drb_model, resolution=200)
+
+# Create visualization with ggplot2
+grid_df <- grid_results$grid_df
+
+# Plot prediction surface
+p_pred <- ggplot(grid_df, aes(x=X1, y=X2, fill=prediction)) +
+  geom_raster(interpolate=TRUE) +
+  scale_fill_viridis(option="plasma") +
+  labs(title="DrBoost Prediction Surface", fill="Prediction") +
+  theme_minimal()
+
+# Add rule boundaries as polygons
+p_regions <- p_pred + 
+  geom_vline(xintercept=0.5, linetype="dashed", color="white", size=0.5) +
+  geom_hline(yintercept=0.5, linetype="dashed", color="white", size=0.5)
+
+# Add training points
+train_df <- data.frame(X_train, y=y_train)
+p_with_points <- p_regions +
+  geom_point(data=train_df, aes(x=X1, y=X2, color=y), 
+             inherit.aes=FALSE, alpha=0.5, size=1.5) +
+  scale_color_viridis(option="viridis", name="Observed") +
+  labs(title="DrBoost Regions with Training Data")
+
+# Compare with true function
+true_grid <- grid_df
+true_grid$true_value <- apply(grid_df[,c("X1","X2")], 1, 
+                             function(r) f_true(r[1], r[2]))
+
+p_true <- ggplot(true_grid, aes(x=X1, y=X2, fill=true_value)) +
+  geom_raster(interpolate=TRUE) +
+  scale_fill_viridis(option="plasma") +
+  geom_vline(xintercept=0.5, linetype="dashed", color="white", size=0.5) +
+  geom_hline(yintercept=0.5, linetype="dashed", color="white", size=0.5) +
+  labs(title="True Function", fill="Value") +
+  theme_minimal()
+
+# Arrange plots
+grid.arrange(p_true, p_with_points, ncol=2)
+```
+
+The visualization shows how closely DrBoost recovers the true underlying regions. Each discovered box has a constant prediction value, and together they form a partition of the feature space.
+
+### 3.6 Making Predictions
+
+Let's evaluate the model on our test set:
+
+```{r evaluate-predictions}
+# Make predictions on the test set
+test_preds <- predict_disjoint_rule_boost(
+  object = drb_model,
+  X_new = X_test,
+  outcome_type = "continuous",
+  logic = FALSE
+)
+
+# Calculate error metrics
+mse <- mean((test_preds - y_test)^2)
+rmse <- sqrt(mse)
+mae <- mean(abs(test_preds - y_test))
+r_squared <- 1 - sum((y_test - test_preds)^2) / sum((y_test - mean(y_test))^2)
+
+# Error against the true (noiseless) function
+true_mse <- mean((test_preds - y_test_true)^2)
+true_rmse <- sqrt(true_mse)
+
+# Display results
+cat("Test set performance metrics:\n")
+cat("MSE:", round(mse, 4), "\n")
+cat("RMSE:", round(rmse, 4), "\n")
+cat("MAE:", round(mae, 4), "\n")
+cat("R²:", round(r_squared, 4), "\n\n")
+cat("Error relative to true function:\n")
+cat("True MSE:", round(true_mse, 4), "\n")
+cat("True RMSE:", round(true_rmse, 4), "\n")
+
+# Visualize predictions vs. actual
+test_df <- data.frame(
+  Actual = y_test,
+  Predicted = test_preds,
+  True = y_test_true
+)
+
+# Scatter plot of predictions
+ggplot(test_df, aes(x=Actual, y=Predicted)) +
+  geom_point(alpha=0.6) +
+  geom_abline(slope=1, intercept=0, color="red", linetype="dashed") +
+  labs(
+    title="DrBoost Test Set Predictions",
+    subtitle=paste("RMSE:", round(rmse, 3), "R²:", round(r_squared, 3))
+  ) +
+  theme_minimal() +
+  coord_fixed(ratio=1)
+```
+
+## 4. Classification with Binary Features
+
+### 4.1 Synthetic Binary Data with Logical Pattern
+
+Now let's demonstrate DrBoost's logic-based mode for a binary classification problem:
+
+```{r binary-data}
+set.seed(123)
+n <- 300  # Increased sample size
+
+# Generate random binary features with some correlation
+# More realistic than completely random binary values
+sigma <- matrix(0.1, nrow=5, ncol=5)  # Base correlation
+diag(sigma) <- 1                      # Unit variance on diagonal
+mu <- rep(0, 5)                       # Mean vector
+
+# Generate correlated normal variables and threshold at 0
+library(MASS)  # For mvrnorm
+Z <- mvrnorm(n, mu, sigma)
+X <- ifelse(Z > 0, 1, 0)
+colnames(X) <- paste0("X", 1:5)
+
+# True logic: Y = 1 if (X1=1 & X3=1) or (X2=0 & X5=1), else 0
+true_logic <- function(row) {
+  (row["X1"] == 1 && row["X3"] == 1) ||
+    (row["X2"] == 0 && row["X5"] == 1)
+}
+Y <- apply(X, 1, true_logic)
+Y <- as.integer(Y)  # Convert to 0/1
+
+# Add noise by flipping a small percentage of labels
+set.seed(456)
+noise_prop <- 0.05  # 5% noise
+noise_idx <- sample(seq_len(n), size=round(noise_prop*n))
+Y[noise_idx] <- 1 - Y[noise_idx]
+
+# Split data: 70% training, 15% validation, 15% test
+set.seed(789)
+indices <- sample(1:3, size=n, replace=TRUE, prob=c(0.7, 0.15, 0.15))
+X_train <- X[indices == 1, , drop=FALSE]
+Y_train <- Y[indices == 1]
+X_val <- X[indices == 2, , drop=FALSE]
+Y_val <- Y[indices == 2]
+X_test <- X[indices == 3, , drop=FALSE]
+Y_test <- Y[indices == 3]
+
+# Summarize the dataset
+cat("Dataset summary:\n")
+cat("Training set:", nrow(X_train), "samples\n")
+cat("Validation set:", nrow(X_val), "samples\n")
+cat("Test set:", nrow(X_test), "samples\n")
+cat("Positive class ratio (overall):", mean(Y), "\n\n")
+
+# Examine feature patterns
+feature_patterns <- apply(X, 2, mean)
+print(data.frame(
+  Feature = colnames(X),
+  Frequency = round(feature_patterns, 3)
+))
+```
+
+### 4.2 Parameter Selection for Logical Rules
+
+When using DrBoost in logic mode, several parameters are particularly important:
+
+1. **K_twoWay**: Controls how many 2-literal combinations to consider in the beam search
+2. **K_threeWay**: Controls how many 3-literal combinations to consider in the beam search
+3. **min_obs_pct**: Minimum coverage required for a rule
+4. **learning_rate**: Step size for coefficient updates (smaller values can improve stability)
+
+The logic search is similar to beam search but specifically adapted for logical expressions:
+
+```{r fit-logic-drboost, eval = FALSE}
+# Fit DrBoost in logic mode for binary classification
+drb_logic <- disjoint_rule_boost(
+  X_train = X_train, 
+  Y_train = Y_train,
+  X_val = X_val,   
+  Y_val = Y_val,
+  
+  # Core settings
+  outcome_type = "binary",         # For classification
+  logic = TRUE,                    # Use logical rules instead of boxes
+  
+  # Boosting parameters
+  max_iterations = 10,             # Maximum boosting rounds
+  learning_rate = 0.5,             # Conservative step size
+  
+  # Logic search parameters
+  K_twoWay = 100,                  # Top-K for two-way combinations
+  K_threeWay = 100,                # Top-K for three-way combinations
+  
+  # Regularization
+  min_obs_pct = 0.01,              # Minimum rule coverage (1%)
+  max_obs_frac = 1.0,              # Maximum rule coverage
+  patience = 3,                    # Early stopping parameter
+  
+  # Use Newton updates for faster convergence
+  second_order_logistic = TRUE     # Use 2nd-order updates for logistic loss
+)
+```
+
+### 4.3 Examining the Logical Rules
+
+One of DrBoost's key advantages is the interpretability of discovered rules. Let's examine them:
+
+```{r examine-logic-rules, eval = FALSE}
+# Basic model summary
+cat("Initial log-odds (intercept):", round(drb_logic$init, 3), "\n")
+cat("Number of logic rules discovered:", length(drb_logic$rule_list), "\n")
+cat("Best validation loss:", round(drb_logic$best_val_loss, 4), "\n")
+cat("Training loss:", round(drb_logic$train_loss_final, 4), "\n\n")
+
+# Display validation loss trajectory
+plot(drb_logic$validation_losses, type="o", col="blue", 
+     xlab="Iteration", ylab="Validation Loss (Log Loss)", 
+     main="Validation Loss vs Iterations")
+abline(v=drb_logic$best_iteration, col="red", lty=2)
+text(drb_logic$best_iteration, min(drb_logic$validation_losses), 
+     "Best model", pos=4, col="red")
+
+# Examine the discovered logic rules
+cat("\nDiscovered Logic Rules:\n")
+cat("----------------------\n")
+for (i in seq_along(drb_logic$rule_list)) {
+  rule <- drb_logic$rule_list[[i]]
+  cat("Rule", i, "\n")
+  cat("  Logic:", rule$region_info$rule_string, "\n")
+  
+  # Convert log-odds coefficient to probability change
+  log_odds <- rule$beta
+  prob_shift <- 1/(1+exp(-log_odds)) - 1/(1+exp(0))
+  
+  cat("  Coefficient (log-odds):", round(log_odds, 3), "\n")
+  cat("  Effect on probability: ", ifelse(prob_shift >= 0, "+", ""), 
+      round(prob_shift * 100, 1), "%\n", sep="")
+  cat("  Coverage:", rule$coverage, "points (", 
+      round(100*rule$coverage/nrow(X_train), 1), "%)\n", sep="")
+  cat("  Val. loss after adding:", round(rule$val_loss, 4), "\n\n")
+}
+
+# Compare to true underlying logic
+cat("True underlying logic:\n")
+cat("(X1==1 & X3==1) | (X2==0 & X5==1)\n\n")
+```
+
+**Interpretation:**
+- Positive coefficients increase the log-odds of class 1
+- Negative coefficients decrease the log-odds of class 1
+- The probability shift shows the effect size in a more intuitive scale
+- Coverage indicates how many training samples match each rule
+
+### 4.4 Visualizing Rule Coverage
+
+Visualizing logical rules is more challenging than continuous boxes, but we can examine rule coverage and predictions:
+
+```{r visualize-logic, fig.height=8, fig.width=9, eval = FALSE}
+# Create a function to display rule coverage across samples
+plot_rule_coverage <- function(model, X, Y, title="Rule Coverage") {
+  n_rules <- length(model$rule_list)
+  if (n_rules == 0) {
+    cat("No rules to visualize\n")
+    return(NULL)
+  }
+  
+  # Find which rule covers each sample
+  rule_assignments <- rep(0, nrow(X))
+  for (i in seq_along(model$rule_list)) {
+    rule <- model$rule_list[[i]]
+    # We need to manually implement the rule logic here
+    # This is a simplification - you'd need to parse rule strings
+    # or use a predict function with debug info in practice
+    rule_pred <- predict_disjoint_rule_boost(
+      object = model,
+      X_new = X,
+      outcome_type = "binary",
+      logic = TRUE,
+      type = "link"
+    )
+    # For demonstration, we'll just use prediction differences to infer coverage
+    # In practice, you'd want to directly access rule coverage info
+  }
+  
+  # For demonstration purposes, let's create a coverage heatmap
+  # We'll use predictions as a proxy for rules
+  preds <- predict_disjoint_rule_boost(
+    object = model,
+    X_new = X,
+    outcome_type = "binary",
+    logic = TRUE,
+    type = "response"  # Get probabilities
+  )
+  
+  # Create data frame for visualization
+  vis_df <- data.frame(
+    Sample = 1:nrow(X),
+    Actual = factor(Y),
+    Predicted_Prob = preds
+  )
+  
+  # Create heatmap for visualizing predictions vs actual
+  # Group by actual class for better visualization
+  vis_df <- vis_df[order(vis_df$Actual, vis_df$Predicted_Prob), ]
+  vis_df$Sample <- 1:nrow(vis_df)  # Reorder samples
+  
+  # Plot
+  ggplot(vis_df, aes(y=Sample, x=1, fill=Predicted_Prob)) +
+    geom_tile() +
+    scale_fill_gradient2(
+      low="blue", mid="white", high="red", 
+      midpoint=0.5, limits=c(0,1),
+      name="Predicted\nProbability"
+    ) +
+    facet_grid(~Actual, scales="free", labeller=label_both) +
+    theme_minimal() +
+    theme(axis.text.x=element_blank(), axis.ticks.x=element_blank()) +
+    labs(
+      title=title,
+      subtitle="Samples grouped by true class, colored by predicted probability",
+      y="Samples", x=""
+    )
+}
+
+# Visualize rule coverage
+plot_rule_coverage(drb_logic, X_train, Y_train, "Training Set Rule Coverage")
+```
+
+### 4.5 Evaluating Classification Performance
+
+Let's evaluate our classification model on the test set:
+
+```{r evaluate-classification, fig.height=7, fig.width=10}
+# Make predictions on test data
+logodds_test <- predict_disjoint_rule_boost(
+  object = drb_logic,
+  X_new = X_test,
+  outcome_type = "binary",
+  logic = TRUE,
+  type = "link"  # Return log-odds
+)
+
+# Calculate probabilities
+probs_test <- 1 / (1 + exp(-logodds_test))
+
+# Binarize predictions at 0.5 threshold
+preds_test <- ifelse(probs_test >= 0.5, 1, 0)
+
+# Calculate metrics
+accuracy <- mean(preds_test == Y_test)
+precision <- sum(preds_test & Y_test) / sum(preds_test)
+recall <- sum(preds_test & Y_test) / sum(Y_test)
+f1 <- 2 * precision * recall / (precision + recall)
+
+# Confusion matrix
+conf_matrix <- table(Predicted = factor(preds_test, levels=c(0,1)), 
+                    Actual = factor(Y_test, levels=c(0,1)))
+
+# Display results
+cat("Classification Performance Metrics:\n")
+cat("Accuracy:", round(accuracy * 100, 1), "%\n")
+cat("Precision:", round(precision * 100, 1), "%\n")
+cat("Recall:", round(recall * 100, 1), "%\n")
+cat("F1 Score:", round(f1 * 100, 1), "%\n\n")
+
+# Display confusion matrix
+cat("Confusion Matrix:\n")
+print(conf_matrix)
+
+# Plot ROC Curve
+library(pROC)
+roc_obj <- roc(Y_test, probs_test)
+auc_value <- auc(roc_obj)
+
+# ROC plot
+plot(roc_obj, main=paste("ROC Curve (AUC =", round(auc_value, 3), ")"))
+abline(a=0, b=1, lty=2, col="gray")
+
+# Calibration plot
+n_bins <- 10
+probs_binned <- cut(probs_test, breaks=seq(0, 1, length.out=n_bins+1), 
+                    include.lowest=TRUE)
+calibration_df <- data.frame(
+  bin_mid = seq(1/(2*n_bins), 1-1/(2*n_bins), length.out=n_bins),
+  bin = levels(probs_binned)
+)
+
+for (i in 1:n_bins) {
+  bin_indices <- which(probs_binned == levels(probs_binned)[i])
+  if (length(bin_indices) > 0) {
+    calibration_df$obs_freq[i] <- mean(Y_test[bin_indices])
+    calibration_df$count[i] <- length(bin_indices)
+  } else {
+    calibration_df$obs_freq[i] <- NA
+    calibration_df$count[i] <- 0
+  }
+}
+
+# Calibration plot with ggplot2
+p_calib <- ggplot(calibration_df, aes(x=bin_mid, y=obs_freq)) +
+  geom_point(aes(size=count), alpha=0.7) +
+  geom_abline(slope=1, intercept=0, linetype="dashed", color="red") +
+  geom_line() +
+  scale_size_continuous(name="Count", range=c(1, 10)) +
+  labs(
+    title="Calibration Plot", 
+    subtitle="Observed frequency vs. predicted probability",
+    x="Predicted Probability", 
+    y="Observed Frequency"
+  ) +
+  theme_minimal() +
+  coord_fixed(ratio=1)
+
+# Combined ROC and calibration in one display
+grid.arrange(
+  ggplotGrob(p_calib),
+  tableGrob(as.matrix(conf_matrix), 
+            rows=c("Pred 0", "Pred 1"), 
+            cols=c("Act 0", "Act 1")),
+  ncol=2
+)
+
+# Create lift chart
+test_df <- data.frame(
+  prob = probs_test,
+  actual = Y_test
+)
+test_df <- test_df[order(-test_df$prob), ]
+test_df$rank_pct <- (1:nrow(test_df)) / nrow(test_df)
+test_df$cum_resp <- cumsum(test_df$actual) / sum(test_df$actual)
+test_df$random <- test_df$rank_pct  # Random model line
+
+# Lift chart
+ggplot(test_df, aes(x=rank_pct)) +
+  geom_line(aes(y=cum_resp, color="DrBoost"), size=1) +
+  geom_line(aes(y=random, color="Random"), linetype="dashed") +
+  scale_color_manual(values=c("DrBoost"="blue", "Random"="gray50")) +
+  labs(
+    title="Lift Chart",
+    subtitle="Cumulative response rate by population percentage",
+    x="Population (%)",
+    y="Cumulative Response Rate",
+    color="Model"
+  ) +
+  theme_minimal()
+```
+
+## 5. Handling Real-World Data
+
+### 5.1 Boston Housing Dataset
+
+Let's apply DrBoost to a real-world dataset - the Boston Housing dataset:
+
+```{r boston-housing, message=FALSE, warning=FALSE}
+# Load Boston Housing data
+if (!requireNamespace("MASS", quietly = TRUE)) {
+  install.packages("MASS")
+}
+data(Boston, package = "MASS")
+
+# Examine the dataset
+str(Boston)
+
+# Split data: 70% train, 15% validation, 15% test
+set.seed(42)
+n <- nrow(Boston)
+indices <- sample(1:3, size=n, replace=TRUE, prob=c(0.7, 0.15, 0.15))
+
+X_boston <- as.matrix(Boston[, -14])  # All features except medv
+y_boston <- Boston$medv              # Outcome variable
+
+X_train <- X_boston[indices == 1, ]
+y_train <- y_boston[indices == 1]
+X_val <- X_boston[indices == 2, ]
+y_val <- y_boston[indices == 2]
+X_test <- X_boston[indices == 3, ]
+y_test <- y_boston[indices == 3]
+
+# Generate thresholds
+boston_thresholds <- build_thresholds_list(X_train, num_thresholds=12)
+
+# Fit DrBoost
+boston_drb <- disjoint_rule_boost(
+  X_train = X_train, 
+  Y_train = y_train,
+  X_val = X_val,   
+  Y_val = y_val,
+  outcome_type = "continuous",
+  logic = FALSE,
+  thresholds_list = boston_thresholds,
+  max_iterations = 20,
+  learning_rate = 1.0,
+  patience = 5,
+  min_obs_pct = 0.05,
+  max_obs_frac = 0.3,  # Smaller box sizes for this dataset
+  K1 = 200, K2 = 200, K3 = 200, K4 = 100,
+  featureNames = colnames(X_train)
+)
+
+# Model summary
+cat("Initial prediction (intercept):", round(boston_drb$init, 3), "\n")
+cat("Number of rules discovered:", length(boston_drb$rule_list), "\n\n")
+
+# Print top 3 rules by absolute coefficient value
+rule_importance <- sapply(boston_drb$rule_list, function(r) abs(r$beta))
+top_rules <- order(rule_importance, decreasing=TRUE)[1:min(3, length(rule_importance))]
+
+cat("Top rules by importance:\n")
+for (i in top_rules) {
+  rule <- boston_drb$rule_list[[i]]
+  cat("Rule", i, "\n")
+  cat("  Region:", rule$region_info$rule_string, "\n")
+  cat("  Coefficient:", round(rule$beta, 3), "\n")
+  cat("  Coverage:", rule$coverage, "points\n\n")
+}
+
+# Evaluate on test set
+boston_preds <- predict_disjoint_rule_boost(
+  object = boston_drb,
+  X_new = X_test,
+  outcome_type = "continuous",
+  logic = FALSE
+)
+
+# Calculate error metrics
+mse <- mean((boston_preds - y_test)^2)
+rmse <- sqrt(mse)
+mae <- mean(abs(boston_preds - y_test))
+r_squared <- 1 - sum((y_test - boston_preds)^2) / sum((y_test - mean(y_test))^2)
+
+# Display results
+cat("Test set performance metrics:\n")
+cat("MSE:", round(mse, 3), "\n")
+cat("RMSE:", round(rmse, 3), "\n")
+cat("MAE:", round(mae, 3), "\n")
+cat("R²:", round(r_squared, 3), "\n")
+
+# Plot predictions vs. actual
+test_df <- data.frame(
+  Actual = y_test,
+  Predicted = boston_preds
+)
+
+ggplot(test_df, aes(x=Actual, y=Predicted)) +
+  geom_point(alpha=0.6) +
+  geom_abline(slope=1, intercept=0, color="red", linetype="dashed") +
+  labs(
+    title="Boston Housing: DrBoost Predictions",
+    subtitle=paste("RMSE:", round(rmse, 2), "R²:", round(r_squared, 3))
+  ) +
+  theme_minimal() +
+  coord_fixed(ratio=1)
+```
+
+### 5.2 Comparison with Other Methods
+
+Let's compare DrBoost with other popular machine learning methods:
+
+```{r comparison, fig.height=8, fig.width=10}
+library(rpart)
+library(randomForest)
+library(gbm)
+library(xgboost)
+
+# Function to calculate metrics
+calculate_metrics <- function(actual, predicted) {
+  mse <- mean((predicted - actual)^2)
+  rmse <- sqrt(mse)
+  mae <- mean(abs(predicted - actual))
+  r_squared <- 1 - sum((actual - predicted)^2) / sum((actual - mean(actual))^2)
+  
+  return(list(
+    MSE = mse,
+    RMSE = rmse,
+    MAE = mae,
+    R_squared = r_squared
+  ))
+}
+
+# We already have DrBoost predictions and metrics
+drb_metrics <- calculate_metrics(y_test, boston_preds)
+
+# 1. CART
+set.seed(123)
+cart_model <- rpart(
+  y_train ~ ., 
+  data = data.frame(as.data.frame(X_train), y_train = y_train),
+  method = "anova",
+  control = rpart.control(cp = 0.01, maxdepth = 6)
+)
+cart_preds <- predict(cart_model, newdata = as.data.frame(X_test))
+cart_metrics <- calculate_metrics(y_test, cart_preds)
+cart_rules <- sum(cart_model$frame$var == "<leaf>")
+
+# 2. Random Forest
+set.seed(123)
+rf_model <- randomForest(
+  x = X_train, 
+  y = y_train,
+  ntree = 200,
+  mtry = floor(sqrt(ncol(X_train)))
+)
+rf_preds <- predict(rf_model, newdata = X_test)
+rf_metrics <- calculate_metrics(y_test, rf_preds)
+
+# 3. GBM
+set.seed(123)
+gbm_model <- gbm::gbm.fit(
+  x = X_train,
+  y = y_train,
+  distribution = "gaussian",
+  n.trees = 100,
+  interaction.depth = 4,
+  shrinkage = 0.1,
+  bag.fraction = 0.5,
+  verbose = FALSE
+)
+# Use validation set to find optimal number of trees
+best_iter <- gbm.perf(gbm_model, method="OOB", plot.it=FALSE)
+gbm_preds <- predict(gbm_model, newdata = X_test, n.trees = best_iter)
+gbm_metrics <- calculate_metrics(y_test, gbm_preds)
+
+# 4. XGBoost
+set.seed(123)
+dtrain <- xgb.DMatrix(data = X_train, label = y_train)
+dtest <- xgb.DMatrix(data = X_test, label = y_test)
+xgb_params <- list(
+  objective = "reg:squarederror",
+  max_depth = 4,
+  eta = 0.1,
+  subsample = 0.7,
+  colsample_bytree = 0.7
+)
+xgb_model <- xgb.train(
+  params = xgb_params,
+  data = dtrain,
+  nrounds = 100,
+  watchlist = list(train = dtrain),
+  verbose = 0
+)
+xgb_preds <- predict(xgb_model, newdata = dtest)
+xgb_metrics <- calculate_metrics(y_test, xgb_preds)
+
+# Compare the results
+results <- data.frame(
+  Method = c("DrBoost", "CART", "Random Forest", "GBM", "XGBoost"),
+  RMSE = c(
+    drb_metrics$RMSE, 
+    cart_metrics$RMSE, 
+    rf_metrics$RMSE, 
+    gbm_metrics$RMSE, 
+    xgb_metrics$RMSE
+  ),
+  R2 = c(
+    drb_metrics$R_squared, 
+    cart_metrics$R_squared, 
+    rf_metrics$R_squared, 
+    gbm_metrics$R_squared, 
+    xgb_metrics$R_squared
+  ),
+  Rules = c(
+    length(boston_drb$rule_list), 
+    cart_rules, 
+    "200 trees", 
+    paste0(best_iter, " trees"), 
+    "100 trees"
+  ),
+  Interpretable = c(
+    "Yes - Disjoint Rules", 
+    "Yes - Single Tree", 
+    "No - Forest", 
+    "No - Ensemble", 
+    "No - Ensemble"
+  )
+)
+
+# Display the comparison table
+knitr::kable(results, digits=4)
+
+# Plot all predictions
+all_preds <- data.frame(
+  Actual = rep(y_test, 5),
+  Predicted = c(
+    boston_preds,  # DrBoost
+    cart_preds,    # CART
+    rf_preds,      # RF
+    gbm_preds,     # GBM
+    xgb_preds      # XGBoost
+  ),
+  Method = rep(
+    c("DrBoost", "CART", "Random Forest", "GBM", "XGBoost"),
+    each = length(y_test)
+  )
+)
+
+# Plot predictions across methods
+ggplot(all_preds, aes(x=Actual, y=Predicted, color=Method)) +
+  geom_point(alpha=0.5) +
+  geom_abline(slope=1, intercept=0, color="gray", linetype="dashed") +
+  facet_wrap(~Method) +
+  labs(
+    title="Comparison of Prediction Methods",
+    x = "Actual Values",
+    y = "Predicted Values"
+  ) +
+  theme_minimal() +
+  theme(legend.position="none")
+```
+
+## 6. Tips and Best Practices
+
+### 6.1 Parameter Tuning Guide
+
+Here are key parameters to consider tuning for DrBoost:
+
+#### Bounding-Box Mode (`logic=FALSE`):
+
+| Parameter | Recommended Range | Effect |
+|-----------|-------------------|--------|
+| `num_thresholds` | 8-20 | Controls granularity of boxes |
+| `max_iterations` | 10-50 | Maximum number of rules |
+| `learning_rate` | 0.1-1.0 | Step size (smaller = more conservative) |
+| `patience` | 3-10 | Early stopping criterion |
+| `min_obs_pct` | 0.01-0.10 | Minimum coverage per rule |
+| `max_obs_frac` | 0.1-0.5 | Maximum coverage per rule |
+| `K1`, `K2`, `K3`, `K4` | 100-1000 | Beam search parameters |
+
+#### Logic Mode (`logic=TRUE`):
+
+| Parameter | Recommended Range | Effect |
+|-----------|-------------------|--------|
+| `max_iterations` | 5-20 | Maximum number of rules |
+| `learning_rate` | 0.1-1.0 | Step size for updates |
+| `K_twoWay` | 50-200 | Top-K for two-literal combinations |
+| `K_threeWay` | 50-200 | Top-K for three-literal combinations |
+| `min_obs_pct` | 0.01-0.05 | Minimum coverage per rule |
+
+### 6.2 Common Issues and Solutions
+
+**Issue: Model finds no rules**
+- Likely causes: Too restrictive coverage constraints or inappropriate thresholds
+- Solution: Reduce `min_obs_pct` or increase `num_thresholds`
+
+**Issue: Rules with very low coverage**
+- Likely causes: `min_obs_pct` set too low
+- Solution: Increase `min_obs_pct` to ensure rules cover meaningful subsets
+
+**Issue: Rules don't improve validation loss**
+- Likely causes: Overfitting or insufficient signal
+- Solution: Try using `max_region_retries` parameter or decrease `learning_rate`
+
+**Issue: Prediction computation is slow**
+- Likely causes: Too many rules or inefficient threshold choices
+- Solution: Limit `max_iterations` or use more strategic threshold placement
+
+**Issue: Memory issues with large datasets**
+- Likely causes: Beam search with many thresholds
+- Solution: Reduce `K1`, `K2`, `K3`, `K4` parameters or use fewer thresholds
+
+### 6.3 Scalability Considerations
+
+DrBoost's computational complexity is influenced by:
+
+1. **Dataset size**: Scales linearly with number of observations
+2. **Feature count**: Beam search complexity increases with feature dimensionality
+3. **Threshold count**: More thresholds = more candidate regions to evaluate
+4. **Maximum iterations**: Directly impacts runtime and memory usage
+
+For large datasets, consider:
+- Using a representative sample for threshold determination
+- Restricting to 1D/2D/3D boxes (setting K4=0)
+- Employing strategic feature selection before applying DrBoost
+- Using parallel processing when available
+
+## 7. Advanced Topics
+
+### 7.1 Custom Prediction Functions
+
+You can customize the prediction process for specialized needs:
+
+```{r custom-prediction, eval=FALSE}
+# Custom prediction function for visualization
+custom_predict <- function(model, newdata, return_rule_id=FALSE) {
+  # Standard prediction
+  preds <- predict_disjoint_rule_boost(
+    object = model,
+    X_new = newdata,
+    outcome_type = "continuous",
+    logic = FALSE
+  )
+  
+  # For each point, determine which rule it belongs to
+  n <- nrow(newdata)
+  rule_ids <- rep(0, n)  # 0 = no rule/intercept only
+  
+  for (i in seq_along(model$rule_list)) {
+    rule <- model$rule_list[[i]]
+    # Check lower/upper bounds for each point
+    lb <- rule$region_info$lowerBound
+    ub <- rule$region_info$upperBound
+    
+    for (j in 1:n) {
+      in_region <- TRUE
+      for (d in 1:ncol(newdata)) {
+        if (newdata[j,d] < lb[d] || newdata[j,d] > ub[d]) {
+          in_region <- FALSE
+          break
+        }
+      }
+      if (in_region) {
+        rule_ids[j] <- i
+      }
+    }
+  }
+  
+  if (return_rule_id) {
+    return(list(predictions=preds, rule_ids=rule_ids))
+  } else {
+    return(preds)
+  }
+}
+```
+
+### 7.2 Cross-Validation
+
+For more robust evaluation, use cross-validation:
+
+```{r cross-validation, eval=FALSE}
+# K-fold cross-validation for DrBoost
+drboost_cv <- function(X, y, k=5, outcome_type="continuous", 
+                       num_thresholds=10, max_iter=20, ...) {
+  set.seed(123)
+  n <- nrow(X)
+  folds <- sample(1:k, n, replace=TRUE)
+  
+  metrics <- list()
+  for (i in 1:k) {
+    cat("Fold", i, "of", k, "\n")
+    
+    # Split data
+    train_idx <- which(folds != i)
+    test_idx <- which(folds == i)
+    
+    X_train <- X[train_idx, , drop=FALSE]
+    y_train <- y[train_idx]
+    X_test <- X[test_idx, , drop=FALSE]
+    y_test <- y[test_idx]
+    
+    # Further split train into train/validation
+    val_size <- floor(0.2 * length(train_idx))
+    val_idx <- sample(train_idx, val_size)
+    actual_train_idx <- setdiff(train_idx, val_idx)
+    
+    X_actual_train <- X[actual_train_idx, , drop=FALSE]
+    y_actual_train <- y[actual_train_idx]
+    X_val <- X[val_idx, , drop=FALSE]
+    y_val <- y[val_idx]
+    
+    # Generate thresholds
+    thresholds <- build_thresholds_list(X_actual_train, num_thresholds)
+    
+    # Fit DrBoost
+    model <- disjoint_rule_boost(
+      X_train = X_actual_train,
+      Y_train = y_actual_train,
+      X_val = X_val,
+      Y_val = y_val,
+      outcome_type = outcome_type,
+      logic = FALSE,
+      thresholds_list = thresholds,
+      max_iterations = max_iter,
+      ...
+    )
+    
+    # Predict and evaluate
+    preds <- predict_disjoint_rule_boost(
+      object = model,
+      X_new = X_test,
+      outcome_type = outcome_type,
+      logic = FALSE
+    )
+    
+    # Store metrics
+    if (outcome_type == "continuous") {
+      metrics[[i]] <- calculate_metrics(y_test, preds)
+    } else {
+      # Binary classification metrics
+      probs <- 1 / (1 + exp(-preds))
+      binary_preds <- ifelse(probs >= 0.5, 1, 0)
+      metrics[[i]] <- list(
+        accuracy = mean(binary_preds == y_test),
+        rules = length(model$rule_list)
+      )
+    }
+  }
+  
+  # Aggregate results
+  return(metrics)
+}
+```
+
+### 7.3 Feature Importance
+
+Extract feature importance from DrBoost rules:
+
+```{r feature-importance, eval=FALSE}
+# Calculate feature importance
+calculate_feature_importance <- function(model) {
+  if (length(model$rule_list) == 0) {
+    return(NULL)
+  }
+  
+  # Extract feature names from the model
+  if (!is.null(model$rule_list[[1]]$region_info$lowerBound)) {
+    p <- length(model$rule_list[[1]]$region_info$lowerBound)
+    feature_names <- names(model$rule_list[[1]]$region_info$lowerBound)
+    if (is.null(feature_names)) {
+      feature_names <- paste0("X", 1:p)
+    }
+  } else {
+    # For logic rules, parse from rule strings
+    # This is a simplification - would need more parsing in practice
+    return(NULL)
+  }
+  
+  # Initialize importance
+  importance <- rep(0, length(feature_names))
+  names(importance) <- feature_names
+  
+  # For each rule
+  for (rule in model$rule_list) {
+    lb <- rule$region_info$lowerBound
+    ub <- rule$region_info$upperBound
+    beta <- abs(rule$beta)  # Use absolute coefficient as weight
+    coverage <- rule$coverage
+    
+    # Check which dimensions are constrained
+    for (j in 1:length(lb)) {
+      is_constrained_lower <- is.finite(lb[j]) && lb[j] > -Inf
+      is_constrained_upper <- is.finite(ub[j]) && ub[j] < Inf
+      
+      if (is_constrained_lower || is_constrained_upper) {
+        # Feature is used in this rule
+        importance[j] <- importance[j] + beta * coverage
+      }
+    }
+  }
+  
+  # Normalize
+  importance <- importance / sum(importance) * 100
+  
+  # Return sorted importance
+  importance <- sort(importance, decreasing = TRUE)
+  return(importance)
+}
+```
+
+## 8. Conclusion
+
+DrBoost offers a unique blend of predictive power and interpretability through its disjoint rule-based approach. By ensuring each observation belongs to exactly one rule, it eliminates the ambiguity often found in traditional ensemble methods.
+
+Key advantages include:
+- Clear, non-overlapping rules that form a partition of the feature space
+- Support for both continuous features (via bounding boxes) and binary features (via logical rules)
+- Competitive predictive performance comparable to black-box methods
+- Strong theoretical guarantees for recovery of piecewise-constant structure
+
+Whether you're working in domains that demand transparency (healthcare, finance, policy) or simply prefer models that can be easily explained and validated, DrBoost provides an effective solution.
+
+For updates and more information, visit the project repository at [https://github.com/blind-contours/DrBoost](https://github.com/blind-contours/DrBoost).
+
+## 9. References
+
+- McCoy, D. "Disjoint Rule Boosting: Non-Overlapping Hyperrectangle Ensembles for Interpretable Machine Learning."
+- Breiman, L., Friedman, J., Stone, C. J., & Olshen, R. A. (1984). *Classification and regression trees*. CRC press.
+- Friedman, J. H. (2001). Greedy function approximation: a gradient boosting machine. *Annals of statistics*, 1189-1232.
+- Rudin, C. (2019). Stop explaining black box machine learning models for high stakes decisions and use interpretable models instead. *Nature Machine Intelligence*, 1(5), 206-215.
+- Letham, B., Rudin, C., McCormick, T. H., & Madigan, D. (2015). Interpretable classifiers using rules and Bayesian analysis: Building a better stroke prediction model. *The Annals of Applied Statistics*, 9(3), 1350-1371.

@@ -2,5 +2,6 @@
 
 export(build_thresholds_list)
 export(disjoint_rule_boost)
+export(predict_disjoint_rule_boost)
 importFrom(Rcpp,evalCpp)
 useDynLib(DrBoost, .registration = TRUE)

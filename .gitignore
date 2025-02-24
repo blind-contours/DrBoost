@@ -11,3 +11,4 @@ sandbox/data/*.json
 
 data/
 drb_results/
+inst/doc

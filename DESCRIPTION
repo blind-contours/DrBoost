@@ -14,5 +14,7 @@ Imports:
 LinkingTo: 
     Rcpp
 SystemRequirements: OpenMP
-
-
+Suggests: 
+    knitr,
+    rmarkdown
+VignetteBuilder: knitr

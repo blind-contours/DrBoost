@@ -21,7 +21,8 @@
 #'   "response" => 0/1 for binary.
 #'
 #' @return Numeric vector of predictions (length = nrow(X_new)).
-#'
+#' @export
+
 predict_disjoint_rule_boost <- function(object,
                                         X_new,
                                         outcome_type=c("continuous","binary"),
