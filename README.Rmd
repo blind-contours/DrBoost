@@ -1,22 +1,28 @@
+---
+output: github_document
+---
 
 <!-- README.md is generated from README.Rmd. Please edit that file -->
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.path = "man/figures/README-",
+  out.width = "100%"
+)
+```
 
 # DrBoost
 
 <!-- badges: start -->
 <!-- badges: end -->
 
-The goal of DrBoost is to provide **disjoint rule-based boosting** for
-interpretable machine learning. It builds a piecewise-constant model as
-a sum of short rules, where each observation is covered by exactly one
-(non-overlapping) rule. This yields a globally interpretable
-“one-rule-per-point” architecture, eliminating the ambiguity of
-overlapping trees or rule sets.
+The goal of DrBoost is to provide **disjoint rule-based boosting** for interpretable machine learning. It builds a piecewise-constant model as a sum of short rules, where each observation is covered by exactly one (non-overlapping) rule. This yields a globally interpretable "one-rule-per-point" architecture, eliminating the ambiguity of overlapping trees or rule sets.
 
 ## Installation
 
-You can install the development version of DrBoost from
-[GitHub](https://github.com/blind-contours/DrBoost) with:
+You can install the development version of DrBoost from [GitHub](https://github.com/blind-contours/DrBoost) with:
 
 ``` r
 # install.packages("pak")
@@ -30,25 +36,16 @@ pak::pak("blind-contours/DrBoost")
 
 DrBoost supports two main modes:
 
-- **Logic-based for binary data**: discovers short AND/OR rules
-  (disjoint).
-- **Bounding-box for continuous features**: searches axis-aligned
-  hyperrectangles using beam search.
+- **Logic-based for binary data**: discovers short AND/OR rules (disjoint).
+- **Bounding-box for continuous features**: searches axis-aligned hyperrectangles using beam search.
 
-Each chosen region is disjoint from the others, forming a partition of
-the feature space. The coefficient on each rule (region) is solved by a
-simple closed-form update (mean residual for continuous, or Newton step
-for logistic). Our approach also offers early-stopping and optional
-“exclude repeated failing region” logic to avoid adding harmful rules.
+Each chosen region is disjoint from the others, forming a partition of the feature space. The coefficient on each rule (region) is solved by a simple closed-form update (mean residual for continuous, or Newton step for logistic). Our approach also offers early-stopping and optional "exclude repeated failing region" logic to avoid adding harmful rules.
 
 ## Example 1: Binary Features and Logical Rules
 
-Imagine you have a dataset with binary features X₁, X₂, …, Xₚ and a
-binary outcome. Suppose the true label is governed by hidden logic like
-(X₁=1 ∧ X₃=1) ∨ (X₂=0 ∧ X₅=1). We can try to recover that using DrBoost
-in `logic=TRUE` mode.
+Imagine you have a dataset with binary features X₁, X₂, …, Xₚ and a binary outcome. Suppose the true label is governed by hidden logic like (X₁=1 ∧ X₃=1) ∨ (X₂=0 ∧ X₅=1). We can try to recover that using DrBoost in `logic=TRUE` mode.
 
-``` r
+```{r binary_example, eval=FALSE}
 library(DrBoost)
 
 set.seed(123)
@@ -99,21 +96,21 @@ cat("Final val loss =", fit_logic$val_loss_final, "\n")
 
 DrBoost will display rules like:
 
-    Iter 1 => coverage=..., val_loss=..., best_val=...
-      rule: (X1==1 & X3==1)
-    Iter 2 => coverage=..., val_loss=..., best_val=...
-      rule: (X2==0 & X5==1)
-    ...
+```
+Iter 1 => coverage=..., val_loss=..., best_val=...
+  rule: (X1==1 & X3==1)
+Iter 2 => coverage=..., val_loss=..., best_val=...
+  rule: (X2==0 & X5==1)
+...
+```
 
-Each observation ends up in exactly one rule region if they are
-disjoint.
+Each observation ends up in exactly one rule region if they are disjoint.
 
 ## Example 2: Continuous Features and Bounding Boxes
 
-Now let’s show how DrBoost handles continuous features by searching for
-axis-aligned boxes.
+Now let's show how DrBoost handles continuous features by searching for axis-aligned boxes.
 
-``` r
+```{r continuous_example, eval=FALSE}
 library(DrBoost)
 
 set.seed(42)
@@ -176,31 +173,24 @@ fit_box$rule_list
 cat("Final validation MSE:", fit_box$val_loss_final, "\n")
 ```
 
-You’ll see something like:
+You'll see something like:
 
-    Iter 1 => coverage=..., val_loss=..., best_val=...
-      rule: (0 <= X1 <= 0.5) & (0 <= X2 <= 0.5)
-    Iter 2 => coverage=..., val_loss=..., best_val=...
-      rule: (0.5 < X1 <= 1) & (0 <= X2 <= 0.5)
-    ...
+```
+Iter 1 => coverage=..., val_loss=..., best_val=...
+  rule: (0 <= X1 <= 0.5) & (0 <= X2 <= 0.5)
+Iter 2 => coverage=..., val_loss=..., best_val=...
+  rule: (0.5 < X1 <= 1) & (0 <= X2 <= 0.5)
+...
+```
 
-indicating how DrBoost partitions the feature space with disjoint boxes
-and assigns each its own coefficient.
+indicating how DrBoost partitions the feature space with disjoint boxes and assigns each its own coefficient.
 
 ## Additional Notes
 
-- **Interpretability**: Because the rules do not overlap, every data
-  point has exactly one “local explanation.”
-- **Implementation**: The package uses a beam-search approach for
-  bounding boxes, enumerating up to 4D subregions, and can optionally
-  use OpenMP for parallel speedup.
-- **Logic-based**: For binary data, setting `logic=TRUE` uses short
-  AND/OR expansions (up to a specified literal depth).
-- **Early Stopping**: The `patience` parameter halts training if we fail
-  to improve validation loss for N consecutive steps.
-- **Excluding failing regions**: An optional “exclude repeated failing
-  region” mechanism avoids reselecting boxes that worsen validation.
+- **Interpretability**: Because the rules do not overlap, every data point has exactly one "local explanation."
+- **Implementation**: The package uses a beam-search approach for bounding boxes, enumerating up to 4D subregions, and can optionally use OpenMP for parallel speedup.
+- **Logic-based**: For binary data, setting `logic=TRUE` uses short AND/OR expansions (up to a specified literal depth).
+- **Early Stopping**: The `patience` parameter halts training if we fail to improve validation loss for N consecutive steps.
+- **Excluding failing regions**: An optional "exclude repeated failing region" mechanism avoids reselecting boxes that worsen validation.
 
-We hope DrBoost helps you build interpretable, piecewise-constant
-ensembles. For more details, please see the function documentation or
-the project repository.
+We hope DrBoost helps you build interpretable, piecewise-constant ensembles. For more details, please see the function documentation or the project repository.
