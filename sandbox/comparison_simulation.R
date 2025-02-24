@@ -15,7 +15,7 @@ DRBOOST_PARAMS <- list(
   K2 = 300,
   K3 = 300,
   K4 = 300,
-  learning_rate = 9.0
+  learning_rate = 1.0
 )
 
 library(readr)
