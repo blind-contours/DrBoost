@@ -11,11 +11,11 @@ DRBOOST_PARAMS <- list(
   min_obs_pct    = 0.01,
   max_obs_frac = 0.25,
   patience       = 10,
-  K1 = 1000,
-  K2 = 500,
+  K1 = 300,
+  K2 = 300,
   K3 = 300,
-  K4 = 200,
-  learning_rate = 5.0
+  K4 = 300,
+  learning_rate = 9.0
 )
 
 library(readr)
