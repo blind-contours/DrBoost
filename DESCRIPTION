@@ -1,0 +1,18 @@
+Package: DrBoost
+Title: Disjoint Rule Boosting
+Version: 0.0.0.9000
+Authors@R: 
+    person("David", "McCoy", , "david_mccoy@berkeley.edu", role = c("aut", "cre"),
+           comment = c(ORCID = "YOUR-ORCID-ID"))
+Description: Fits a linear combination of rules similar to XGboost but where the rules are disjoing and we exhaustively search for hyperrectangles
+License: MIT
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.2.1
+Imports: 
+    Rcpp (>= 1.0.0)
+LinkingTo: 
+    Rcpp
+SystemRequirements: OpenMP
+
+
