@@ -2,3 +2,12 @@
 .Rhistory
 .RData
 .Ruserdata
+
+# Ignore all files in sandbox/data
+sandbox/data/
+sandbox/data/*.csv
+sandbox/data/*.parquet
+sandbox/data/*.json
+
+data/
+drb_results/
