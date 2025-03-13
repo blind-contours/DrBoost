@@ -2,7 +2,7 @@
 % Please edit documentation in R/DrBoost.R
 \name{disjoint_rule_boost}
 \alias{disjoint_rule_boost}
-\title{Disjoint Rule Boosting (Gradient-Boosting Style) with Excluding Repeated Failing Regions}
+\title{disjoint_rule_boost}
 \usage{
 disjoint_rule_boost(
   X_train,
@@ -10,76 +10,76 @@ disjoint_rule_boost(
   X_val,
   Y_val,
   outcome_type = c("continuous", "binary"),
-  thresholds_list = NULL,
-  logic = FALSE,
-  K1 = 200,
-  K2 = 200,
-  K3 = 200,
-  K4 = 200,
-  featureNames = character(0),
-  K_twoWay = 100,
-  K_threeWay = 100,
-  max_iterations = 20,
-  learning_rate = 0.1,
-  min_obs_pct = 0.05,
+  thresholds_list,
+  max_pass1_iter = 100,
+  max_dim_refine = 4,
+  patience = 5,
+  learning_rate = 0.05,
+  min_obs_pct = 0.001,
   max_obs_frac = 1,
-  patience = 3,
-  second_order_logistic = TRUE,
-  max_region_retries = 5
+  K1 = 300,
+  K2 = 300,
+  K3 = 300,
+  K4 = 300,
+  second_order_logistic = FALSE,
+  max_overlap = 1,
+  refine_leftover = TRUE,
+  mini_batch_frac = 1,
+  mini_batch_frac_2 = 1,
+  ...
 )
 }
 \arguments{
-\item{X_train}{matrix or data.frame of shape (n x p)}
+\item{X_train, Y_train}{numeric training data}
 
-\item{Y_train}{numeric vector (length n): continuous or {0,1}}
-
-\item{X_val}{matrix or data.frame of shape (m x p)}
-
-\item{Y_val}{numeric vector (length m)}
+\item{X_val, Y_val}{numeric validation data}
 
 \item{outcome_type}{"continuous" or "binary"}
 
-\item{thresholds_list}{numeric matrix for bounding-box approach (if logic=FALSE)}
+\item{thresholds_list}{numeric matrix (row= threshold index, col=feature)}
 
-\item{logic}{boolean; if TRUE, do logic-based search. If FALSE, bounding-box}
+\item{max_pass1_iter}{integer}
 
-\item{K1, K2, K3, K4}{integers for beam-search expansions (bounding-box)}
+\item{max_dim_refine}{up to 4D expansions in pass2}
 
-\item{featureNames}{character vector of length p (for bounding-box rule strings)}
+\item{patience}{integer => how many "worse" validations to allow}
 
-\item{K_twoWay, K_threeWay}{integers for logic expansions}
+\item{learning_rate}{numeric => scale local fit}
 
-\item{max_iterations}{integer, maximum boosting steps}
+\item{min_obs_pct}{numeric => fraction for min coverage}
 
-\item{learning_rate}{numeric, e.g. 0.1}
+\item{max_obs_frac}{numeric => fraction for max coverage}
 
-\item{min_obs_pct}{numeric, min coverage fraction}
+\item{K1, K2, K3, K4}{integer => beam widths}
 
-\item{max_obs_frac}{numeric, max coverage fraction to avoid giant rules}
+\item{second_order_logistic}{bool => not fully used here}
 
-\item{patience}{integer, early-stopping if no improvement for \code{patience} steps}
+\item{max_overlap}{integer => e.g. 1 => disjoint}
 
-\item{second_order_logistic}{bool: if TRUE, uses 2nd-order updates for logistic}
+\item{refine_leftover}{bool => add leftover box}
 
-\item{max_region_retries}{integer, how many candidate boxes we try per iteration
-before concluding none helps validation}
+\item{mini_batch_frac}{numeric => fraction of training to sample for pass1}
+
+\item{mini_batch_frac_2}{numeric => fraction for pass2}
+
+\item{...}{passed to find_best_region_beam_cpp}
 }
 \value{
-A list with:
-\item{init}{the initial intercept (numeric scalar)}
-\item{rule_list}{list of discovered rules (each with coverage, beta, region info)}
-\item{f_train}{final fitted values on training (numeric vector)}
-\item{f_val}{final fitted values on validation}
-\item{train_loss_final}{final train loss}
-\item{val_loss_final}{final validation loss}
-\item{validation_losses}{history of validation losses}
-\item{best_val_loss}{lowest validation loss found}
-\item{best_iteration}{iteration index with best validation}
+A list with final model details, including:
+\itemize{
+\item $init (global intercept)
+\item $rule_list (each rule w/ $region_info and numeric $beta vector)
+\item final predictions on train and val
+}
 }
 \description{
-Builds a piecewise-constant model as a sum of disjoint rules,
-with gradient-boosting style updates and a small loop each iteration
-to skip repeated failing regions. If the top region from beam-search
-hurts validation loss, we exclude that region (so it won't keep appearing)
-and re-run beam-search to get the next-best box, up to \code{max_region_retries} tries.
+A two-pass approach:
+\enumerate{
+\item Pass 1 uses mini-batch sampling to pick bounding boxes (up to ~2D).
+\item Pass 2 prunes/refines each box, possibly w/ expansions up to 4D.
+}
+
+For continuous data, auto-choose local model type among
+{"constant","linear","poly2"} if coverage is large enough.
+For binary, do piecewise-constant shifts.
 }

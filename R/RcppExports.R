@@ -5,8 +5,8 @@ find_best_logical_region_cpp <- function(X, residuals, used_rows, min_obs_pct = 
     .Call(`_DrBoost_find_best_logical_region_cpp`, X, residuals, used_rows, min_obs_pct)
 }
 
-find_best_region_beam_cpp <- function(X, residuals, assignedMask, thresholds_list, min_obs_pct = 0.05, max_obs_frac = 1.0, K1 = 200L, K2 = 200L, K3 = 200L, K4 = 200L, featureNames = character(), excludedBoxes = NULL) {
-    .Call(`_DrBoost_find_best_region_beam_cpp`, X, residuals, assignedMask, thresholds_list, min_obs_pct, max_obs_frac, K1, K2, K3, K4, featureNames, excludedBoxes)
+find_topk_candidates_beam_cpp <- function(X, residuals, coverageCount, max_overlap, thresholds_list, min_obs_pct = 0.05, max_obs_frac = 1.0, K1 = 200L, K2 = 200L, K3 = 200L, K4 = 200L, topK = 50L) {
+    .Call(`_DrBoost_find_topk_candidates_beam_cpp`, X, residuals, coverageCount, max_overlap, thresholds_list, min_obs_pct, max_obs_frac, K1, K2, K3, K4, topK)
 }
 
 find_best_binary_rule_3way_topK <- function(X, residuals, unassigned, K_twoWay = 100L, K_threeWay = 100L) {
